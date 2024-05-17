@@ -9,6 +9,8 @@ import com.lzh.yupao.exception.BusinessException;
 import com.lzh.yupao.mapper.UserMapper;
 import com.lzh.yupao.model.domain.User;
 import com.lzh.yupao.service.UserService;
+import com.lzh.yupao.utils.AlgorithmUtil;
+import javafx.util.Pair;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Service;
@@ -16,10 +18,15 @@ import org.springframework.util.CollectionUtils;
 import org.springframework.util.DigestUtils;
 
 import javax.servlet.http.HttpServletRequest;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.SortedMap;
+import java.util.TreeMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -256,6 +263,49 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User>
             return 1;
         }
         return 0;
+    }
+
+    @Override
+    public List<User> matchUsers(long num, User loginUser) {
+        QueryWrapper<User> queryWrapper = new QueryWrapper<>();
+        queryWrapper.select("id", "tags");
+        queryWrapper.isNotNull("tags");
+        List<User> userList = this.list(queryWrapper);
+        String tags = loginUser.getTags();
+        Gson gson = new Gson();
+        //将json字符串转化为List
+        List<String> tagList = gson.fromJson(tags, new TypeToken<List<String>>() {
+        }.getType());
+        //存储用户信息及其对应的编辑距离
+        List<Pair<User, Integer>> userPairList = new ArrayList<>();
+        for (int i = 0; i < userList.size(); i++) {
+            User user = userList.get(i);
+            String userTags = user.getTags();
+            //过滤无标签和当前用户
+            if (StringUtils.isBlank(userTags) || Objects.equals(user.getId(), loginUser.getId())) {
+                continue;
+            }
+            List<String> userTagsList = gson.fromJson(userTags, new TypeToken<List<String>>() {
+            }.getType());
+            //计算编辑距离
+            int distance = AlgorithmUtil.minDistance(tagList, userTagsList);
+            userPairList.add(new Pair<>(user, distance));
+        }
+        //根据编辑距离由小到大排序
+        List<Pair<User, Integer>> topUserPairList = userPairList.stream().sorted((a, b) -> a.getValue() - b.getValue()).limit(num).collect(Collectors.toList());
+        //取出用户id
+        List<Long> idList = topUserPairList.stream().map(pair -> pair.getKey().getId()).collect(Collectors.toList());
+        QueryWrapper<User> wrapper = new QueryWrapper<>();
+        wrapper.in("id", idList);
+        //wrapper.in查询是无序的，需要重新排序数据
+        //将重新查询到的数据根据ID分组
+        Map<Long, List<User>> userIdUserListMap = this.list(wrapper).stream().map(this::getSafetyUser).collect(Collectors.groupingBy(User::getId));
+        List<User> finalUserList = new ArrayList<>();
+        //根据有序的ID去查询数据再封装返回
+        for (Long userId : idList) {
+            finalUserList.add(userIdUserListMap.get(userId).get(0));
+        }
+        return finalUserList;
     }
 }
 
